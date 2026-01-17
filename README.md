@@ -36,54 +36,17 @@ BookingProcessor, обеспечивающий последовательнос�
 
 
 Реализуйте систему с привязкой к пользователям и сеансам мероприятия. В качестве ответа: ссылка на репозиторий с решением.
+# Kod
 
-
-
-
-
-# теория нужна?
-
-
-
-
-Понял! Нужна реализация на **Python**, **без использования паттернов Command и Memento**, но с соблюдением всех требований:
-
-- Есть операции: `ReserveSeat`, `CancelReservation`, `PurchaseTicket`, `ChangeSeat`.
-- Каждая имеет метод `execute(session, seat_id, user)`.
-- Поддержка `undo()` для каждой операции.
-- Все изменения — только через эти операции.
-- Сущности: `EventSession`, `Seat` (со статусами `FREE`, `RESERVED`, `SOLD`), `User`.
-- Есть `BookingProcessor`, управляющий выполнением и отменой.
-- **Без явного применения паттернов Command и Memento** — то есть не создаём общий интерфейс `Command`, не храним "мементо", а делаем простую, прямую ООП-реализацию с логикой отката внутри операций.
-
-Вот готовое решение:
-
----
-
-### 🔗 Ссылка на репозиторий (вы можете скопировать код в свой):
-[https://github.com/your-username/event-booking-python](https://github.com/your-username/event-booking-python)
-
-> Поскольку я не могу создать репозиторий за вас, ниже — полный рабочий код на Python. Вы можете положить его в файлы и загрузить в Git.
-
----
-
-### 📁 Структура проекта
-```
-event_booking/
-├── __init__.py
-├── models.py          # User, Seat, EventSession
-├── operations.py      # ReserveSeat, CancelReservation, etc.
-└── processor.py       # BookingProcessor
-```
-
----
-
-### `models.py`
 ```python
 from enum import Enum
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional, Tuple, Any
 
+
+# ================
+# Модели
+# ================
 
 class SeatStatus(Enum):
     FREE = "free"
@@ -97,12 +60,13 @@ class User:
         self.name = name
 
     def __eq__(self, other):
-        if not isinstance(other, User):
-            return False
-        return self.id == other.id
+        return isinstance(other, User) and self.id == other.id
 
     def __hash__(self):
         return hash(self.id)
+
+    def __repr__(self):
+        return f"User({self.id}, {self.name})"
 
 
 class Seat:
@@ -111,7 +75,7 @@ class Seat:
         self.row = row
         self.number = number
         self.status = SeatStatus.FREE
-        self.current_user: User | None = None
+        self.current_user: Optional[User] = None
 
     def __repr__(self):
         return f"Seat({self.id}, {self.status.value}, user={self.current_user.name if self.current_user else None})"
@@ -130,14 +94,11 @@ class EventSession:
         if seat_id not in self.seats:
             raise ValueError(f"Seat {seat_id} not found in session {self.id}")
         return self.seats[seat_id]
-```
 
----
 
-### `operations.py`
-```python
-from .models import EventSession, User, SeatStatus
-
+# ================
+# Операции
+# ================
 
 class ReserveSeat:
     def execute(self, session: EventSession, seat_id: str, user: User):
@@ -179,25 +140,23 @@ class PurchaseTicket:
         if seat.current_user != user:
             raise ValueError("Reservation belongs to another user")
         seat.status = SeatStatus.SOLD
-        # user remains the same
 
     def undo(self, session: EventSession, seat_id: str, user: User):
         seat = session.get_seat(seat_id)
         if seat.status == SeatStatus.SOLD and seat.current_user == user:
             seat.status = SeatStatus.RESERVED
-            # user unchanged
 
 
 class ChangeSeat:
     def __init__(self):
-        self._old_seat_id = None  # for undo
+        self._old_seat_id: Optional[str] = None
 
     def execute(self, session: EventSession, new_seat_id: str, user: User):
-        # Find user's current reserved seat
+        # Find currently reserved seat for this user
         old_seat = None
-        for seat in session.seats.values():
-            if seat.status == SeatStatus.RESERVED and seat.current_user == user:
-                old_seat = seat
+        for s in session.seats.values():
+            if s.status == SeatStatus.RESERVED and s.current_user == user:
+                old_seat = s
                 break
         if old_seat is None:
             raise ValueError("User has no reserved seat to change from")
@@ -217,8 +176,11 @@ class ChangeSeat:
     def undo(self, session: EventSession, new_seat_id: str, user: User):
         if self._old_seat_id is None:
             return
-        old_seat = session.get_seat(self._old_seat_id)
-        new_seat = session.get_seat(new_seat_id)
+        try:
+            old_seat = session.get_seat(self._old_seat_id)
+            new_seat = session.get_seat(new_seat_id)
+        except ValueError:
+            return  # seat disappeared — cannot undo safely
 
         if (new_seat.status == SeatStatus.RESERVED and
             new_seat.current_user == user and
@@ -228,20 +190,14 @@ class ChangeSeat:
             new_seat.current_user = None
             old_seat.status = SeatStatus.RESERVED
             old_seat.current_user = user
-```
 
----
 
-### `processor.py`
-```python
-from typing import Optional, Tuple, Any
-from .models import EventSession, User
-from .operations import ReserveSeat, CancelReservation, PurchaseTicket, ChangeSeat
-
+# ================
+# Процессор
+# ================
 
 class BookingProcessor:
     def __init__(self):
-        # Store last operation and its args for undo
         self._last_operation: Optional[Any] = None
         self._last_args: Optional[Tuple[EventSession, str, User]] = None
 
@@ -275,50 +231,158 @@ class BookingProcessor:
         op = self._last_operation
         session, seat_id, user = self._last_args
         op.undo(session, seat_id, user)
-        # Clear history (only one-level undo)
         self._last_operation = None
         self._last_args = None
+
+
+# ================
+# Пример использования
+# ================
+
+if __name__ == "__main__":
+    # Создаём сессию и места
+    session = EventSession("concert-001", datetime(2026, 3, 15, 20, 0))
+    session.add_seat(Seat("A1", "A", 1))
+    session.add_seat(Seat("A2", "A", 2))
+    session.add_seat(Seat("B1", "B", 1))
+
+    alice = User("u1", "Alice")
+    processor = BookingProcessor()
+
+    # Бронируем
+    processor.reserve_seat(session, "A1", alice)
+    print("After reserve:", session.get_seat("A1"))
+
+    # Покупаем билет
+    processor.purchase_ticket(session, "A1", alice)
+    print("After purchase:", session.get_seat("A1"))
+
+    # Отменяем покупку (через undo)
+    processor.undo_last()
+    print("After undo purchase:", session.get_seat("A1"))
+
+    # Меняем место
+    processor.change_seat(session, "A2", alice)
+    print("After change: A1 =", session.get_seat("A1"), "| A2 =", session.get_seat("A2"))
+
+    # Отменяем смену
+    processor.undo_last()
+    print("After undo change: A1 =", session.get_seat("A1"), "| A2 =", session.get_seat("A2"))
+
 ```
+
+# Teoria
+
+Вот краткие и ясные ответы на все три вопроса:
 
 ---
 
-### ✅ Пример использования
+### 1. **Зачем нужен `.gitignore`? Какие файлы и папки обычно добавляют в него для Python-проекта?**
+
+**Назначение `.gitignore`:**  
+Файл `.gitignore` указывает Git, какие файлы и директории **не следует отслеживать** при коммитах. Это помогает избежать случайного добавления:
+- временных или локальных файлов,
+- секретных данных (паролей, ключей),
+- артефактов сборки.
+
+**Типичное содержимое `.gitignore` для Python-проекта:**
+```gitignore
+# Байт-код Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Виртуальные окружения
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Логи и базы данных
+*.log
+*.sqlite3
+*.db
+
+# IDE / редакторы
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Переменные окружения
+.env
+.env.local
+
+# Пакеты и зависимости
+*.egg-info/
+build/
+dist/
+```
+
+Можно использовать шаблон с [gitignore.io](https://www.toptal.com/developers/gitignore) — например, запрос `python`.
+
+---
+
+### 2. **Как полиморфизм реализуется в Python? Приведите пример.**
+
+**Полиморфизм** — это способность объектов разных типов обрабатывать один и тот же интерфейс (метод) по-разному.
+
+В Python он реализуется **благодаря динамической типизации** и **наследованию**.
+
+**Пример:**
 ```python
-from datetime import datetime
-from event_booking.models import EventSession, Seat, User
-from event_booking.processor import BookingProcessor
+class Animal:
+    def speak(self):
+        raise NotImplementedError("Subclass must implement this method")
 
-# Setup
-session = EventSession("sess1", datetime(2026, 2, 1, 19, 0))
-session.add_seat(Seat("A1", "A", 1))
-session.add_seat(Seat("A2", "A", 2))
+class Dog(Animal):
+    def speak(self):
+        return "Гав!"
 
-user = User("u1", "Alice")
-processor = BookingProcessor()
+class Cat(Animal):
+    def speak(self):
+        return "Мяу!"
 
-# Reserve
-processor.reserve_seat(session, "A1", user)
-print(session.get_seat("A1"))  # reserved
-
-# Change seat
-processor.change_seat(session, "A2", user)
-print(session.get_seat("A1"))  # free
-print(session.get_seat("A2"))  # reserved
-
-# Undo change
-processor.undo_last()
-print(session.get_seat("A1"))  # reserved
-print(session.get_seat("A2"))  # free
+# Полиморфное использование
+animals = [Dog(), Cat()]
+for animal in animals:
+    print(animal.speak())  # Вызывается разный метод в зависимости от типа
 ```
 
+**Вывод:**
+```
+Гав!
+Мяу!
+```
+
+Python не требует явного объявления интерфейсов — достаточно, чтобы объект имел нужный метод (**утинная типизация**: «Если ходит как утка и крякает как утка — значит, это утка»).
+
 ---
 
-### 🔒 Важно:
-- Все изменения происходят **только через операции** — напрямую менять `seat.status` нельзя (в реальном проекте можно сделать поля приватными или использовать `@property`).
-- Отмена (`undo`) поддерживается **только для последней операции** (одноуровневая история), как того требует простота без Memento.
-- Нет общего интерфейса `BookingCommand` — каждая операция — независимый класс (это **не паттерн Command**).
-- Нет сохранения снимков состояния — откат делается логически (это **не Memento**).
+### 3. **Различия между реляционными и нереляционными БД. Когда что использовать?**
+
+| Характеристика            | Реляционные (SQL)                     | Нереляционные (NoSQL)                  |
+|--------------------------|----------------------------------------|----------------------------------------|
+| **Структура данных**     | Таблицы с фиксированной схемой         | Гибкая структура: документы, ключ-значение, графы и т.д. |
+| **Язык запросов**        | SQL                                    | Зависит от СУБД (например, MongoDB Query Language) |
+| **Связи между данными**  | Поддержка JOIN, внешние ключи          | Обычно денормализация, вложенные данные |
+| **Масштабируемость**     | Вертикальная (сложнее горизонтальная)  | Горизонтальная (легко масштабируется)  |
+| **ACID**                 | Полная поддержка                       | Часто eventual consistency (BASE)      |
+| **Примеры**              | PostgreSQL, MySQL, SQLite              | MongoDB, Redis, Cassandra, Neo4j       |
+
+**Когда использовать:**
+
+- **Реляционные БД**, если:
+  - Данные структурированы и взаимосвязаны (например, банковские транзакции).
+  - Нужны строгие гарантии целостности (ACID).
+  - Часто нужны сложные JOIN-запросы.
+
+- **Нереляционные БД**, если:
+  - Структура данных гибкая или часто меняется.
+  - Требуется высокая производительность и горизонтальное масштабирование.
+  - Данные можно хранить в виде документов, пар «ключ-значение» или графов (например, пользовательские профили, логи, рекомендательные системы).
 
 ---
 
-Вы можете скопировать этот код в репозиторий и опубликовать. Если нужно — добавлю `pyproject.toml`, тесты или документацию.
+Если хочешь — могу привести примеры архитектурных решений, где выбор СУБД критичен.
